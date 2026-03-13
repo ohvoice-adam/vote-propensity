@@ -1,0 +1,18 @@
+# Voter data files — large and sensitive
+*.csv
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Output
+predictions*.csv
+
+# OS
+.DS_Store
