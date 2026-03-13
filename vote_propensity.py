@@ -59,6 +59,8 @@ def parse_args():
     p.add_argument("voter_file", help="Path to Ohio voter file (CSV)")
     p.add_argument("--output", default="predictions.csv",
                    help="Output CSV path (default: predictions.csv)")
+    p.add_argument("--use-party", action="store_true", default=False,
+                   help="Include party affiliation as a model feature (off by default for 501c3 compliance)")
     p.add_argument("--no-gpu", dest="gpu", action="store_false", default=True,
                    help="Disable GPU acceleration")
     p.add_argument("--ethnicity-chunksize", type=int, default=10_000,
@@ -593,6 +595,7 @@ def build_panel_dataset(
     df: pd.DataFrame,
     election_cols: list,
     col_dates: dict,
+    use_party: bool = False,
 ) -> tuple:
     """
     Build training panel from 2014, 2018, 2022 midterm primaries.
@@ -643,7 +646,7 @@ def build_panel_dataset(
                 "cong_dist":      df["cong_dist"],
                 "state_rep_dist": df["state_rep_dist"],
                 "state_sen_dist": df["state_sen_dist"],
-                "party_code":     df["party_code"],
+                **( {"party_code": df["party_code"]} if use_party else {} ),
                 "asian":          df["asian"],
                 "black":          df["black"],
                 "hispanic":       df["hispanic"],
@@ -778,6 +781,7 @@ def predict_2026(
     model,
     election_cols: list,
     col_dates: dict,
+    use_party: bool = False,
 ) -> pd.DataFrame:
     """Generate 2026 primary propensity scores for all active voters."""
     print("\n[6/6] Generating 2026 primary propensity scores...")
@@ -812,7 +816,7 @@ def predict_2026(
             "cong_dist":             df["cong_dist"],
             "state_rep_dist":        df["state_rep_dist"],
             "state_sen_dist":        df["state_sen_dist"],
-            "party_code":            df["party_code"],
+            **( {"party_code": df["party_code"]} if use_party else {} ),
             "asian":                 df["asian"],
             "black":                 df["black"],
             "hispanic":              df["hispanic"],
@@ -908,7 +912,9 @@ def main():
         )
 
     # 5. Build panel & train
-    X, y, w = build_panel_dataset(df, election_cols, col_dates)
+    if not args.use_party:
+        print("      Party affiliation excluded (use --use-party to include)")
+    X, y, w = build_panel_dataset(df, election_cols, col_dates, use_party=args.use_party)
 
     # Free election columns from df — no longer needed after panel construction
     import gc
@@ -924,7 +930,7 @@ def main():
     gc.collect()
 
     # 6. Predict
-    results = predict_2026(df, model, election_cols, col_dates)
+    results = predict_2026(df, model, election_cols, col_dates, use_party=args.use_party)
 
     # Save
     out_path = Path(args.output)
