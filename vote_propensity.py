@@ -916,21 +916,19 @@ def main():
         print("      Party affiliation excluded (use --use-party to include)")
     X, y, w = build_panel_dataset(df, election_cols, col_dates, use_party=args.use_party)
 
-    # Free election columns from df — no longer needed after panel construction
     import gc
-    df.drop(columns=election_cols, errors="ignore", inplace=True)
-    gc.collect()
-    mem_mb = df.memory_usage(deep=True).sum() / 1_048_576
-    print(f"      df after dropping election cols: {mem_mb:,.0f} MB")
-
     model = train_model(X, y, w, use_gpu=args.gpu, n_trees=args.n_trees)
 
     # Free panel data — XGBoost has its own internal copy
     del X, y, w
     gc.collect()
 
-    # 6. Predict
+    # 6. Predict (needs election cols still in df)
     results = predict_2026(df, model, election_cols, col_dates, use_party=args.use_party)
+
+    # Free election columns from df — no longer needed after prediction
+    df.drop(columns=election_cols, errors="ignore", inplace=True)
+    gc.collect()
 
     # Save
     out_path = Path(args.output)
