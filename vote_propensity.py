@@ -847,7 +847,7 @@ def predict_2026(
             "SOS_VOTERID":           df["SOS_VOTERID"],
             "LAST_NAME":             df["LAST_NAME"],
             "FIRST_NAME":            df["FIRST_NAME"],
-            "DATE_OF_BIRTH":         df["DATE_OF_BIRTH"],
+            "DATE_OF_BIRTH":         df["dob"].dt.strftime("%m/%d/%Y"),
             "PARTY_AFFILIATION":     df["PARTY_AFFILIATION"],
             "RESIDENTIAL_ZIP":       df["RESIDENTIAL_ZIP"],
             "PRECINCT_CODE":         df["PRECINCT_CODE"],
