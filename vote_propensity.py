@@ -73,6 +73,9 @@ def parse_args():
                    help="Disable ethnicity result caching")
     p.add_argument("--n-trees", type=int, default=500,
                    help="Number of XGBoost trees (default: 500)")
+    p.add_argument("--checkpoint-dir", default=None,
+                   help="Directory for checkpoint files to resume failed runs "
+                        "(default: <output_stem>.checkpoints/ next to output)")
     return p.parse_args()
 
 
@@ -880,50 +883,83 @@ def main():
     args = parse_args()
     t0 = datetime.now()
 
+    import gc
+
+    out_path = Path(args.output)
+    if args.checkpoint_dir:
+        ckpt_dir = Path(args.checkpoint_dir)
+    else:
+        ckpt_dir = out_path.parent / (out_path.stem + ".checkpoints")
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    DF_CKPT    = ckpt_dir / "df_after_ethnicity.parquet"
+    MODEL_CKPT = ckpt_dir / "model.ubj"
+
     print("=" * 70)
     print("  Ohio Voter Propensity Model — May 5, 2026 Primary")
     print(f"  Run started: {t0.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Checkpoint dir: {ckpt_dir}")
     print("=" * 70)
 
-    # 1. Load
-    df = load_voter_file(args.voter_file)
-
-    # 2. Demographics
-    df = extract_demographics(df)
-
-    # 3. Election columns
-    election_cols, col_dates = identify_election_columns(df)
-    print(f"\n      Found {len(election_cols)} election columns "
-          f"({col_dates[election_cols[0]]} – {col_dates[election_cols[-1]]})")
-
-    # 4. Race/gender (unless skipped)
-    if args.skip_ethnicity:
-        print("\n[3/6] Skipping ethnicity prediction (--skip-ethnicity)")
-        for col in ["asian", "black", "hispanic", "white", "pct_female"]:
-            if col not in df.columns:
-                df[col] = 0.25 if col != "pct_female" else 0.5
+    # ── Steps 1–4: Load + demographics + ethnicity ───────────────────────────
+    if DF_CKPT.exists():
+        print(f"\n[1-4/6] Resuming from checkpoint: {DF_CKPT.name}")
+        df = pd.read_parquet(DF_CKPT)
+        election_cols, col_dates = identify_election_columns(df)
+        print(f"      Loaded {len(df):,} voters, "
+              f"{len(election_cols)} election columns "
+              f"({col_dates[election_cols[0]]} – {col_dates[election_cols[-1]]})")
     else:
-        df = predict_ethnicity(
-            df,
-            voter_file=args.voter_file,
-            chunksize=args.ethnicity_chunksize,
-            n_workers=args.workers,
-            use_cache=args.cache,
-        )
+        # 1. Load
+        df = load_voter_file(args.voter_file)
 
-    # 5. Build panel & train
-    if not args.use_party:
-        print("      Party affiliation excluded (use --use-party to include)")
-    X, y, w = build_panel_dataset(df, election_cols, col_dates, use_party=args.use_party)
+        # 2. Demographics
+        df = extract_demographics(df)
 
-    import gc
-    model = train_model(X, y, w, use_gpu=args.gpu, n_trees=args.n_trees)
+        # 3. Election columns
+        election_cols, col_dates = identify_election_columns(df)
+        print(f"\n      Found {len(election_cols)} election columns "
+              f"({col_dates[election_cols[0]]} – {col_dates[election_cols[-1]]})")
 
-    # Free panel data — XGBoost has its own internal copy
-    del X, y, w
-    gc.collect()
+        # 4. Race/gender (unless skipped)
+        if args.skip_ethnicity:
+            print("\n[3/6] Skipping ethnicity prediction (--skip-ethnicity)")
+            for col in ["asian", "black", "hispanic", "white", "pct_female"]:
+                if col not in df.columns:
+                    df[col] = 0.25 if col != "pct_female" else 0.5
+        else:
+            df = predict_ethnicity(
+                df,
+                voter_file=args.voter_file,
+                chunksize=args.ethnicity_chunksize,
+                n_workers=args.workers,
+                use_cache=args.cache,
+            )
 
-    # 6. Predict (needs election cols still in df)
+        print(f"\n      Saving checkpoint → {DF_CKPT.name}")
+        df.to_parquet(DF_CKPT, index=True)
+
+    # ── Step 5: Build panel & train ──────────────────────────────────────────
+    if MODEL_CKPT.exists():
+        import xgboost as xgb
+        print(f"\n[5/6] Resuming from checkpoint: {MODEL_CKPT.name}")
+        model = xgb.XGBClassifier()
+        model.load_model(MODEL_CKPT)
+    else:
+        if not args.use_party:
+            print("      Party affiliation excluded (use --use-party to include)")
+        X, y, w = build_panel_dataset(df, election_cols, col_dates, use_party=args.use_party)
+
+        model = train_model(X, y, w, use_gpu=args.gpu, n_trees=args.n_trees)
+
+        print(f"\n      Saving checkpoint → {MODEL_CKPT.name}")
+        model.save_model(MODEL_CKPT)
+
+        # Free panel data — XGBoost has its own internal copy
+        del X, y, w
+        gc.collect()
+
+    # ── Step 6: Predict (needs election cols still in df) ────────────────────
     results = predict_2026(df, model, election_cols, col_dates, use_party=args.use_party)
 
     # Free election columns from df — no longer needed after prediction
@@ -931,12 +967,12 @@ def main():
     gc.collect()
 
     # Save
-    out_path = Path(args.output)
     results.to_csv(out_path, index=False)
     elapsed = (datetime.now() - t0).total_seconds()
 
     print(f"\n{'=' * 70}")
     print(f"  Done in {elapsed:.0f}s  |  Output: {out_path}  ({len(results):,} voters)")
+    print(f"  Checkpoints in: {ckpt_dir}  (safe to delete after a successful run)")
 
     elig = (results["eligible_2026"] == 1) & (results["active_status"] == 1)
     scored = results[elig.values]
